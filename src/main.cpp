@@ -1,8 +1,8 @@
 #include "../include/radix_tree.hpp"
 #include "../include/database.hpp"
 #include <chrono>
-#include <memory>  // for std::unique_ptr
-#include <array>   // for std::array
+#include <memory>
+#include <array>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
@@ -14,6 +14,26 @@
 #include <vector>
 #include <algorithm>
 #include <curl/curl.h>
+#include "../include/user_manager.hpp"
+#include <termios.h>
+#include <unistd.h>
+
+std::string getPassword(const std::string& prompt = "Password: ") {
+    std::cout << prompt;
+    
+    struct termios oldt, newt;
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    newt.c_lflag &= ~(ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+    
+    std::string password;
+    std::getline(std::cin, password);
+    
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    std::cout << std::endl;
+    return password;
+}
 
 // ANSI Color Codes
 const std::string RESET = "\033[0m";
@@ -25,21 +45,17 @@ const std::string BOLD_BLUE = "\033[1;34m";
 const std::string BOLD_YELLOW = "\033[1;33m";
 const std::string BOLD_GREEN = "\033[1;32m";
 
-// Global variables
 std::string currentUser;
 std::string userPath;
 std::unordered_map<std::string, std::string> bookmarks;
-
-// Global database instance
+UserManager userManager;
 std::unique_ptr<DictionaryDB> db;
 
-// Callback function for cURL
 static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
-// Function to fetch a random word from an API
 std::string fetchRandomWord() {
     CURL* curl;
     CURLcode res;
@@ -70,7 +86,6 @@ std::string fetchRandomWord() {
     return randomWord;
 }
 
-// Function to get meaning (tries local DB first, falls back to Python script)
 void getMeaningFromPython(const std::string &word) {
     // Try to get meaning from local database first
     std::string meaning = db->get_meaning(word);
@@ -211,65 +226,6 @@ void exportStatsToCSV(const RadixTree &tree, const std::string &path) {
             << RESET << "\n";
 }
 
-void selectUser() {
-  const std::string usersDir = "assets/users/";
-  std::filesystem::create_directories(usersDir);
-
-  while (true) {
-    std::cout << "--- Select User ---" << std::endl;
-    std::vector<std::string> users;
-    int i = 1;
-    for (const auto &entry : std::filesystem::directory_iterator(usersDir)) {
-      if (entry.is_directory()) {
-        std::cout << i << ". " << entry.path().filename().string() << std::endl;
-        users.push_back(entry.path().filename().string());
-        i++;
-      }
-    }
-    std::cout << i << ". Add New User" << std::endl;
-
-    std::cout << CYAN << "Enter your choice: " << RESET;
-    std::string choiceStr;
-    std::getline(std::cin, choiceStr);
-    int choice;
-    try {
-      choice = std::stoi(choiceStr);
-    } catch (...) {
-      std::cout << RED << "Invalid input. Please enter a number." << RESET
-                << std::endl;
-      continue;
-    }
-
-    if (choice > 0 && choice <= static_cast<int>(users.size())) {
-      currentUser = users[choice - 1];
-      userPath = usersDir + currentUser + "/";
-      std::cout << GREEN << "\nWelcome, " << currentUser << "!" << RESET
-                << std::endl;
-      return;
-    } else if (choice == i) {
-      std::cout << CYAN << "Enter new username: " << RESET;
-      std::string newUsername;
-      std::getline(std::cin, newUsername);
-      if (newUsername.empty() || newUsername.find(' ') != std::string::npos) {
-        std::cout << RED
-                  << "Invalid username. Cannot be empty or contain spaces."
-                  << RESET << std::endl;
-      } else {
-        currentUser = newUsername;
-        userPath = usersDir + currentUser + "/";
-        std::filesystem::create_directories(userPath);
-        std::cout << GREEN << "User '" << currentUser << "' created." << RESET
-                  << std::endl;
-        std::cout << GREEN << "\nWelcome, " << currentUser << "!" << RESET
-                  << std::endl;
-        return;
-      }
-    } else {
-      std::cout << RED << "Invalid choice. Please try again." << RESET
-                << std::endl;
-    }
-  }
-}
 
 void showMenu() {
   std::cout << "\n--- Radix Tree Dictionary ---" << std::endl;
@@ -314,7 +270,6 @@ std::string getDictionaryFile() {
   }
 }
 
-// Helper function to clean input strings
 std::string cleanInput(const std::string& input) {
     std::string result = input;
     // Remove carriage returns (\r)
@@ -333,8 +288,109 @@ int main() {
     return 1;
   }
 
-  selectUser();
+  // User authentication
+  while (true) {
+    std::cout << "\n--- Dictionary App ---" << std::endl;
+    std::cout << "1. Login" << std::endl;
+    std::cout << "2. Create New User" << std::endl;
+    std::cout << "3. Remove User" << std::endl;
+    std::cout << "4. Exit" << std::endl;
+    std::cout << "Enter your choice: ";
+    
+    int choice;
+    std::cin >> choice;
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    
+    if (choice == 1) {
+      // Login
+      std::cout << "\n--- Login ---" << std::endl;
+      std::string username, password;
+      std::cout << "Username: ";
+      std::getline(std::cin, username);
+      
+      password = getPassword();
+      
+      if (userManager.authenticate(username, password)) {
+        currentUser = username;
+        userPath = userManager.getUserDir();
+        std::cout << "\nWelcome, " << currentUser << "!" << std::endl;
+        break;
+      } else {
+        std::cout << "\nInvalid username or password. Please try again." << std::endl;
+      }
+    } 
+    else if (choice == 2) {
+      // Create new user
+      std::cout << "\n--- Create New User ---" << std::endl;
+      std::string username, password;
+      
+      while (true) {
+        std::cout << "Username: ";
+        std::getline(std::cin, username);
+        
+        if (username.empty() || username.find(' ') != std::string::npos) {
+          std::cout << "Invalid username. Cannot be empty or contain spaces." << std::endl;
+          continue;
+        }
+        
+        if (userManager.userExists(username)) {
+          std::cout << "Username already exists. Please choose a different one." << std::endl;
+          continue;
+        }
+        break;
+      }
+      
+      while (true) {
+        password = getPassword("Password: ");
+        std::string confirmPassword = getPassword("Confirm Password: ");
+        
+        if (password == confirmPassword) {
+          break;
+        }
+        std::cout << "Passwords do not match. Please try again." << std::endl;
+      }
+      
+      if (userManager.createUser(username, password)) {
+        std::cout << "\nUser created successfully! Please login with your new credentials." << std::endl;
+      } else {
+        std::cout << "\nFailed to create user. Please try again." << std::endl;
+      }
+    }
+    else if (choice == 3) {
+      // Remove user
+      std::cout << "\n--- Remove User ---" << std::endl;
+      std::string username, password;
+      
+      std::cout << "Username to remove: ";
+      std::getline(std::cin, username);
+      
+      if (!userManager.userExists(username)) {
+        std::cout << "User does not exist." << std::endl;
+        continue;
+      }
+      
+      password = getPassword("Enter password for " + username + ": ");
+      
+      if (userManager.authenticate(username, password)) {
+        if (userManager.removeUser(username)) {
+          std::cout << "User removed successfully." << std::endl;
+        } else {
+          std::cout << "Failed to remove user." << std::endl;
+        }
+      } else {
+        std::cout << "Incorrect password. User not removed." << std::endl;
+      }
+    }
+    else if (choice == 4) {
+      std::cout << "Goodbye!" << std::endl;
+      return 0;
+    }
+    else {
+      std::cout << "Invalid choice. Please try again." << std::endl;
+    }
+  }
 
+  // At this point, user is authenticated
   RadixTree tree;
   tree.loadStats(userPath + "stats.txt");
   loadBookmarks(userPath + "bookmarks.txt");
