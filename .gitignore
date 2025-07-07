@@ -1,0 +1,10 @@
+# Sensitive files to ignore
+auth.py
+assets/users/*/export.csv
+assets/bookmarks.txt
+.env
+# Byte-compiled / cache files
+__pycache__/
+*.pyc
+# OS files
+.DS_Store
